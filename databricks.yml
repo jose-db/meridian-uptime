@@ -1,0 +1,109 @@
+bundle:
+  name: meridian-uptime
+
+variables:
+  catalog:
+    default: main
+  schema:
+    default: meridian
+  lakebase_instance:
+    default: meridian-db
+  llm_endpoint:
+    default: databricks-claude-sonnet-5-5
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://<your-workspace>.cloud.databricks.com/
+
+resources:
+  pipelines:
+    meridian_ingest:
+      name: meridian-ingest-bronze-silver-gold
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      channel: CURRENT
+      photon: true
+      configuration:
+        catalog: ${var.catalog}
+        schema: ${var.schema}
+      libraries:
+        - file:
+            path: ./src/pipeline/meridian_ingest.sql
+
+  database_instances:
+    meridian_db:
+      name: ${var.lakebase_instance}
+      capacity: CU_1
+
+  jobs:
+    meridian_end_to_end:
+      name: meridian-uptime-end-to-end
+      description: "Lakeflow → UC → ML → GenAI → Lakebase, one governed run. Daily at 05:00 plant time."
+      schedule:
+        quartz_cron_expression: "0 0 5 * * ?"
+        timezone_id: America/Monterrey
+        pause_status: PAUSED
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+      tasks:
+        - task_key: setup_governance
+          notebook_task:
+            notebook_path: ./src/notebooks/00_setup_governance.py
+        - task_key: land_raw_files
+          depends_on: [{task_key: setup_governance}]
+          notebook_task:
+            notebook_path: ./src/notebooks/01_generate_raw_data.py
+        - task_key: lakeflow_ingest
+          depends_on: [{task_key: land_raw_files}]
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.meridian_ingest.id}
+            full_refresh: true
+        - task_key: train_failure_model
+          depends_on: [{task_key: lakeflow_ingest}]
+          notebook_task:
+            notebook_path: ./src/notebooks/02_train_failure_model.py
+        - task_key: score_and_prioritize
+          depends_on: [{task_key: train_failure_model}]
+          notebook_task:
+            notebook_path: ./src/notebooks/03_score_and_prioritize.py
+        - task_key: genai_repair_plans
+          depends_on: [{task_key: score_and_prioritize}]
+          notebook_task:
+            notebook_path: ./src/notebooks/04_genai_repair_plans.py
+            base_parameters:
+              llm_endpoint: ${var.llm_endpoint}
+        - task_key: publish_lakebase
+          depends_on: [{task_key: genai_repair_plans}]
+          notebook_task:
+            notebook_path: ./src/notebooks/05_load_lakebase.py
+            base_parameters:
+              lakebase_instance: ${var.lakebase_instance}
+              app_sp_client_id: ${resources.apps.meridian_planner.service_principal_client_id}
+
+  apps:
+    meridian_planner:
+      name: meridian-uptime-planner
+      description: "Maintenance planner console — predict, prioritize by OEM exposure, dispatch"
+      source_code_path: ./app
+      resources:
+        - name: lakebase
+          database:
+            instance_name: ${resources.database_instances.meridian_db.name}
+            database_name: databricks_postgres
+            permission: CAN_CONNECT_AND_CREATE
+        - name: warehouse
+          sql_warehouse:
+            id: <warehouse-id>
+            permission: CAN_USE
+        - name: genie
+          genie_space:
+            name: meridian-reliability
+            space_id: <genie-space-id>
+            permission: CAN_RUN

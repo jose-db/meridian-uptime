@@ -1,0 +1,266 @@
+{
+  "version": 2,
+  "config": {
+    "sample_questions": [
+      {
+        "id": "7adc9eaf7cdbd1955913feac2c0df04a",
+        "question": [
+          "What is the total cost of spindle bearing failures by plant?"
+        ]
+      },
+      {
+        "id": "803be6c12bc5a1145a11c3fbda3a9ef5",
+        "question": [
+          "Which plant lost the most hours to unplanned downtime in the last 90 days?"
+        ]
+      },
+      {
+        "id": "c74986aae106a71a5b443ea4eba509a3",
+        "question": [
+          "Which OEM customers are exposed to a line-down risk in the next 48 hours?"
+        ]
+      },
+      {
+        "id": "eed84517f9d6770db52ebd83c8147d59",
+        "question": [
+          "How much net value did the failure model deliver in the backtest?"
+        ]
+      },
+      {
+        "id": "fb194a835eb54b69fd448598988b0e6b",
+        "question": [
+          "Which machines should we fix first?"
+        ]
+      }
+    ]
+  },
+  "data_sources": {
+    "tables": [
+      {
+        "identifier": "main.meridian.gold_failure_events",
+        "description": [
+          "Historical unplanned machine failures with downtime and full cost (parts + labor + lost contribution)."
+        ],
+        "column_configs": [
+          {
+            "column_name": "failure_mode",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          },
+          {
+            "column_name": "plant_id",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          }
+        ]
+      },
+      {
+        "identifier": "main.meridian.gold_machine_daily_kpis",
+        "description": [
+          "Per machine per day availability, unplanned down hours, parts produced and sensor health."
+        ],
+        "column_configs": [
+          {
+            "column_name": "plant_name",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          }
+        ]
+      },
+      {
+        "identifier": "main.meridian.gold_machine_risk",
+        "description": [
+          "Current 48h failure risk per machine (ML model), likely failure mode, next OEM order and $ exposure. One row per machine."
+        ],
+        "column_configs": [
+          {
+            "column_name": "oem_customer",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          },
+          {
+            "column_name": "risk_band",
+            "enable_format_assistance": true,
+            "enable_entity_matching": true
+          }
+        ]
+      },
+      {
+        "identifier": "main.meridian.gold_model_backtest",
+        "description": [
+          "Backtest of the failure model on the hold-out window: failures caught, downtime avoided, net $ value."
+        ]
+      },
+      {
+        "identifier": "main.meridian.silver_machines",
+        "description": [
+          "Asset registry: machine, plant, line, type, model, criticality."
+        ]
+      },
+      {
+        "identifier": "main.meridian.silver_production_orders",
+        "description": [
+          "MES production orders for the next 7 days with OEM line-down penalties and finished-goods buffer."
+        ]
+      },
+      {
+        "identifier": "main.meridian.silver_work_orders",
+        "description": [
+          "CMMS work orders, corrective and preventive, with technician notes."
+        ]
+      }
+    ]
+  },
+  "instructions": {
+    "text_instructions": [
+      {
+        "id": "e00fba6fedfb8a49e13346f7099a23fc",
+        "content": [
+          "Company: Meridian Precision, automotive Tier-1 supplier. Plants: SAL=Saltillo, MTY=Monterrey, QRO=Quer\u00e9taro. 60 CNC machines.",
+          "Unplanned downtime = status DOWN hours in gold_machine_daily_kpis.unplanned_down_hours, or downtime_hours in gold_failure_events. Preventive work orders are planned and are NOT unplanned downtime.",
+          "Cost of downtime: use gold_failure_events.total_cost_usd (parts + labor at $85/h + lost contribution at $1,450 per machine-hour).",
+          "Risk questions ('which machines are at risk', 'what should we fix first') use gold_machine_risk ordered by priority_rank; risk_band values: 'ACT NOW' (>=60%), 'WATCH' (30-60%), 'LOW'. exposure_usd is the probability-weighted cost if the machine fails within 48 hours, including OEM line-down penalties beyond the finished-goods buffer.",
+          "Time windows: the data's 'today' is the max(day) in gold_machine_daily_kpis; compute 'last N days' relative to that, not current_date().",
+          "Failure modes: SPINDLE_BEARING, COOLANT_PUMP, SERVO_AXIS, TOOL_CHANGER. Present them in title case without underscores.",
+          "'At risk', 'exposed' or 'line-down risk' means risk_band IN ('ACT NOW', 'WATCH') in gold_machine_risk; LOW machines are not at risk. Exposure questions should filter to those bands unless the user asks for all machines.",
+          "Always round money to whole dollars and percentages to one decimal."
+        ]
+      }
+    ],
+    "example_question_sqls": [
+      {
+        "id": "29d5ce6cc5803e0a47bcbf6862c08731",
+        "question": [
+          "Which plant lost the most hours to unplanned downtime in the last 90 days?"
+        ],
+        "sql": [
+          "SELECT plant_name, SUM(unplanned_down_hours) AS unplanned_down_hours FROM main.meridian.gold_machine_daily_kpis WHERE day > (SELECT date_sub(max(day), 90) FROM main.meridian.gold_machine_daily_kpis) GROUP BY plant_name ORDER BY unplanned_down_hours DESC"
+        ]
+      },
+      {
+        "id": "8cb2e9807cfcf7a7759b87e1512085c5",
+        "question": [
+          "What is the total cost of failures by failure mode?"
+        ],
+        "sql": [
+          "SELECT failure_mode, COUNT(*) AS failures, ROUND(SUM(downtime_hours)) AS downtime_hours, ROUND(SUM(total_cost_usd)) AS total_cost_usd FROM main.meridian.gold_failure_events GROUP BY failure_mode ORDER BY total_cost_usd DESC"
+        ]
+      },
+      {
+        "id": "fcd2888dc59f7d68e0fdbd0c4112ad75",
+        "question": [
+          "Which machines should we fix first?"
+        ],
+        "sql": [
+          "SELECT priority_rank, machine_id, plant_name, ROUND(failure_prob_48h*100,1) AS failure_prob_pct, risk_band, likely_failure_mode, oem_customer, finished_goods_buffer_hours, ROUND(exposure_usd) AS exposure_usd FROM main.meridian.gold_machine_risk WHERE risk_band <> 'LOW' ORDER BY priority_rank"
+        ]
+      }
+    ],
+    "join_specs": [
+      {
+        "id": "6caeba444797a281a0110e0c80ad5814",
+        "left": {
+          "identifier": "main.meridian.gold_failure_events",
+          "alias": "gold_failure_events"
+        },
+        "right": {
+          "identifier": "main.meridian.silver_machines",
+          "alias": "silver_machines"
+        },
+        "sql": [
+          "`gold_failure_events`.`machine_id` = `silver_machines`.`machine_id`",
+          "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+        ]
+      },
+      {
+        "id": "843eca7556234d9c90eae1fc0f1e2939",
+        "left": {
+          "identifier": "main.meridian.silver_production_orders",
+          "alias": "silver_production_orders"
+        },
+        "right": {
+          "identifier": "main.meridian.silver_machines",
+          "alias": "silver_machines"
+        },
+        "sql": [
+          "`silver_production_orders`.`machine_id` = `silver_machines`.`machine_id`",
+          "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+        ]
+      }
+    ]
+  },
+  "benchmarks": {
+    "questions": [
+      {
+        "id": "3adce21d1d7dd04feed1f4f2dcbbeeeb",
+        "question": [
+          "Which failure mode has the longest average downtime?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT failure_mode, ROUND(AVG(downtime_hours),1) AS avg_downtime_h FROM main.meridian.gold_failure_events GROUP BY failure_mode ORDER BY avg_downtime_h DESC LIMIT 1"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "7690207bf1661fec08c65e2e1725be6f",
+        "question": [
+          "How many unplanned failures happened in total?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT COUNT(*) FROM main.meridian.gold_failure_events"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "7f0f8920174ab00a85c7287a6827a2e8",
+        "question": [
+          "Total exposure in dollars for machines in ACT NOW"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT ROUND(SUM(exposure_usd)) FROM main.meridian.gold_machine_risk WHERE risk_band = 'ACT NOW'"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "9275439e49ade1ced51157d8d2dfa497",
+        "question": [
+          "Which machine has the highest failure probability right now?"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT machine_id, failure_prob_48h FROM main.meridian.gold_machine_risk ORDER BY failure_prob_48h DESC LIMIT 1"
+            ]
+          }
+        ]
+      },
+      {
+        "id": "cb23389f451a3b18264f1da524c21a48",
+        "question": [
+          "Average availability by plant"
+        ],
+        "answer": [
+          {
+            "format": "SQL",
+            "content": [
+              "SELECT plant_name, ROUND(AVG(availability)*100,1) AS availability_pct FROM main.meridian.gold_machine_daily_kpis GROUP BY plant_name ORDER BY plant_name"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

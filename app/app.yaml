@@ -1,0 +1,8 @@
+command: ["streamlit", "run", "app.py", "--server.headless", "true"]
+env:
+  - name: MU_LAKEBASE_INSTANCE
+    value: "meridian-db"
+  - name: MU_LAKEBASE_DB
+    value: "meridian"
+  - name: MU_GENIE_SPACE_ID
+    value: "<genie-space-id>"
